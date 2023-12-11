@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH --job-name=carperai
+#SBATCH --partition=g40x
+#SBATCH --account=carperai
+#SBATCH --gpus-per-task=1
+#SBATCH --cpus-per-gpu=12
+#SBATCH --ntasks=1
+#SBATCH --array=0-9
+#SBATCH --output=slurm/logs/%x_%A_%a.out
+
+source venv/bin/activate
+
+# Define the arrays
+games=("dark_hex" "phantom_ttt")
+alphas=(0.015625 0.03125 0.05 0.065 0.125)
+
+# Calculate the indices
+game_index=$((${SLURM_ARRAY_TASK_ID} / 10))
+alpha_index=$((${SLURM_ARRAY_TASK_ID} % 5))
+
+# Run the command with the parameters
+srun python algorithms/soft_dqn/rl_best_response.py --game_name ${games[$game_index]} --optimizer_str adam --alpha ${alphas[$alpha_index]}

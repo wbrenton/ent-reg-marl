@@ -1,0 +1,6 @@
+pygambit==16.0.2
+open-spiel==1.1.0
+numpy>=1.22.3
+scipy>=1.8.0
+matplotlib>=2.0.0
+tqdm>=4.64.0

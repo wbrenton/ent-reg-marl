@@ -1,0 +1,20 @@
+#!/bin/bash
+#SBATCH --job-name=carperai
+#SBATCH --partition=g40x
+#SBATCH --account=carperai
+#SBATCH --gpus-per-task=1
+#SBATCH --cpus-per-gpu=12
+#SBATCH --ntasks=1
+#SBATCH --array=0-4  # Adjusted to 0-4 for 5 alpha values
+#SBATCH --output=slurm/logs/%x_%A_%a.out
+
+source venv/bin/activate
+
+# Define the alpha values
+alphas=(0.015625 0.03125 0.05 0.065 0.125)
+
+# Use SLURM_ARRAY_TASK_ID to select the alpha value
+alpha_index=${SLURM_ARRAY_TASK_ID}
+
+# Run the command with the specified game and alpha parameter
+srun python algorithms/soft_dqn/train.py --game_name phantom_ttt --optimizer_str adam --alpha ${alphas[$alpha_index]}
