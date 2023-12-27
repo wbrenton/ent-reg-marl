@@ -1,0 +1,19 @@
+#!/bin/bash
+#SBATCH --job-name=carperai
+#SBATCH --partition=g40x
+#SBATCH --account=carperai
+#SBATCH --gpus-per-task=1
+#SBATCH --cpus-per-gpu=12
+#SBATCH --ntasks=1
+#SBATCH --array=0-1
+#SBATCH --output=slurm/logs/%x_%A_%a.out
+
+source venv/bin/activate
+
+# Define the array of game names
+GAMES=("dark_hex" "phantom_ttt")
+
+# Use the SLURM_ARRAY_TASK_ID to select the game name
+GAME_NAME=${GAMES[$SLURM_ARRAY_TASK_ID]}
+
+srun python algorithms/ppo/train.py --game_name $GAME_NAME

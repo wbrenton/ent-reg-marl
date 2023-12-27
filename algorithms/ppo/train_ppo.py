@@ -1,0 +1,246 @@
+import sys 
+sys.path.append('/admin/home-willb/gtrl/')
+
+# Copyright 2022 DeepMind Technologies Limited
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""An example of use of PPO.
+
+Note: code adapted (with permission) from
+https://github.com/vwxyzjn/cleanrl/blob/master/cleanrl/ppo.py and
+https://github.com/vwxyzjn/ppo-implementation-details/blob/main/ppo_atari.py
+"""
+
+# pylint: disable=g-importing-member
+import collections
+from datetime import datetime
+import logging
+import os
+import random
+import sys
+import time
+from absl import app
+from absl import flags
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.tensorboard import SummaryWriter
+
+import pyspiel
+from algorithms.ppo.ppo import PPO, PPOAgent
+from open_spiel.python.algorithms import random_agent
+from open_spiel.python.rl_environment import ChanceEventSampler
+from open_spiel.python.rl_environment import Environment
+from open_spiel.python.vector_env import SyncVectorEnv
+
+
+FLAGS = flags.FLAGS
+
+flags.DEFINE_string("exp_name",
+                    os.path.basename(__file__).rstrip(".py"),
+                    "the name of this experiment")
+flags.DEFINE_string("game_name", "leduc_poker", "the id of the OpenSpiel game")
+flags.DEFINE_integer("eval_episodes", 1000, "number of evaluation episodes per evaluation")
+flags.DEFINE_float("learning_rate", 2.5e-4,
+                   "the learning rate of the optimizer")
+flags.DEFINE_integer("seed", 1, "seed of the experiment")
+flags.DEFINE_integer("total_timesteps", 10_000_000,
+                     "total timesteps of the experiments")
+flags.DEFINE_integer("eval_every", 10, "evaluate the policy every N updates")
+flags.DEFINE_bool("torch_deterministic", True,
+                  "if toggled, `torch.backends.cudnn.deterministic=False`")
+flags.DEFINE_bool("cuda", True, "if toggled, cuda will be enabled by default")
+
+# Algorithm specific arguments
+flags.DEFINE_integer("num_envs", 1, "the number of parallel game environments")
+flags.DEFINE_integer(
+    "num_steps", 128,
+    "the number of steps to run in each environment per policy rollout")
+flags.DEFINE_bool(
+    "anneal_lr", True,
+    "Toggle learning rate annealing for policy and value networks")
+flags.DEFINE_bool("gae", True, "Use GAE for advantage computation")
+flags.DEFINE_float("gamma", 0.99, "the discount factor gamma")
+flags.DEFINE_float("gae_lambda", 0.95,
+                   "the lambda for the general advantage estimation")
+flags.DEFINE_integer("num_minibatches", 4, "the number of mini-batches")
+flags.DEFINE_integer("update_epochs", 4, "the K epochs to update the policy")
+flags.DEFINE_bool("norm_adv", True, "Toggles advantages normalization")
+flags.DEFINE_float("clip_coef", 0.1, "the surrogate clipping coefficient")
+flags.DEFINE_bool(
+    "clip_vloss", True,
+    "Toggles whether or not to use a clipped loss for the value function, as per the paper"
+)
+flags.DEFINE_float("ent_coef", 0.05, "coefficient of the entropy") # ALPHA
+flags.DEFINE_float("vf_coef", 0.5, "coefficient of the value function")
+flags.DEFINE_float("max_grad_norm", 0.5,
+                   "the maximum norm for the gradient clipping")
+flags.DEFINE_float("target_kl", None, "the target KL divergence threshold")
+
+
+def setup_logging():
+  root = logging.getLogger()
+  root.setLevel(logging.DEBUG)
+
+  handler = logging.StreamHandler(sys.stdout)
+  handler.setLevel(logging.DEBUG)
+  formatter = logging.Formatter(
+      "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+  handler.setFormatter(formatter)
+  root.addHandler(handler)
+
+
+def make_single_env(game_name, seed):
+
+  def gen_env():
+    game = pyspiel.load_game(game_name)
+    return Environment(game, chance_event_sampler=ChanceEventSampler(seed=seed))
+
+  return gen_env
+
+
+def eval_against_random_bots(env, trained_agent, random_agents, num_episodes):
+  """Evaluates `trained_agents` against `random_agents` for `num_episodes`."""
+  
+  num_players = len(random_agents)
+  sum_episode_rewards = np.zeros(num_players)
+  for player_pos in range(num_players):
+    cur_agents = random_agents[:]
+    cur_agents[player_pos] = trained_agent
+    for _ in range(num_episodes):
+      time_step = env.reset()
+      episode_rewards = 0
+      turn_num = 0
+      while not time_step.last():
+        turn_num += 1
+        player_id = time_step.observations["current_player"]
+        if env.is_turn_based:
+          agent_output = cur_agents[player_id].step(
+              [time_step] if player_pos == player_id else time_step, is_evaluation=True)
+          action_list = [agent_output[0].action] if player_pos == player_id else [agent_output.action]
+        else:
+          agents_output = [
+              agent.step([time_step], is_evaluation=True) for agent in cur_agents
+          ]
+          action_list = [agent_output.action for agent_output in agents_output]
+        time_step = env.step(action_list)
+        episode_rewards += time_step.rewards[player_pos]
+      sum_episode_rewards[player_pos] += episode_rewards
+  return sum_episode_rewards / num_episodes
+
+
+def main(_):
+  setup_logging()
+
+  batch_size = int(FLAGS.num_envs * FLAGS.num_steps)
+
+  current_day = datetime.now().strftime("%d")
+  current_month_text = datetime.now().strftime("%h")
+  run_name = f"{FLAGS.game_name}__{FLAGS.exp_name}__"
+  run_name += f"{FLAGS.seed}__{current_month_text}__{current_day}__{int(time.time())}"
+
+  writer = SummaryWriter(f"runs/{run_name}")
+  writer.add_text(
+      "hyperparameters",
+      "|param|value|\n|-|-|\n%s" %
+      ("\n".join([f"|{key}|{value}|" for key, value in vars(FLAGS).items()])),
+  )
+
+  random.seed(FLAGS.seed)
+  np.random.seed(FLAGS.seed)
+  torch.manual_seed(FLAGS.seed)
+  torch.backends.cudnn.deterministic = FLAGS.torch_deterministic
+
+  device = torch.device(
+      "cuda" if torch.cuda.is_available() and FLAGS.cuda else "cpu")
+  logging.info("Using device: %s", str(device))
+
+  envs = SyncVectorEnv([
+        make_single_env(FLAGS.game_name, FLAGS.seed + i)()
+        for i in range(FLAGS.num_envs)
+  ])
+  agent_fn = PPOAgent
+  
+
+  game = envs.envs[0]._game  # pylint: disable=protected-access
+  info_state_shape = tuple(game.information_state_tensor_shape())
+
+  num_updates = FLAGS.total_timesteps // batch_size
+  agent = PPO(
+      input_shape=info_state_shape,
+      num_actions=game.num_distinct_actions(),
+      num_players=game.num_players(),
+      num_envs=FLAGS.num_envs,
+      steps_per_batch=FLAGS.num_steps,
+      num_minibatches=FLAGS.num_minibatches,
+      update_epochs=FLAGS.update_epochs,
+      learning_rate=FLAGS.learning_rate,
+      gae=FLAGS.gae,
+      gamma=FLAGS.gamma,
+      gae_lambda=FLAGS.gae_lambda,
+      normalize_advantages=FLAGS.norm_adv,
+      clip_coef=FLAGS.clip_coef,
+      clip_vloss=FLAGS.clip_vloss,
+      entropy_coef=FLAGS.ent_coef,
+      value_coef=FLAGS.vf_coef,
+      max_grad_norm=FLAGS.max_grad_norm,
+      target_kl=FLAGS.target_kl,
+      device=device,
+      writer=writer,
+      agent_fn=agent_fn,
+  )
+  eval_env = make_single_env(FLAGS.game_name, FLAGS.seed + FLAGS.num_envs)()
+  random_agents = [
+        random_agent.RandomAgent(player_id=idx, num_actions=game.num_distinct_actions())
+        for idx in range(game.num_players())
+  ]
+
+  n_reward_window = 50
+  recent_rewards = collections.deque(maxlen=n_reward_window)
+  time_step = envs.reset()
+  for update in range(num_updates):
+    for _ in range(FLAGS.num_steps):
+      agent_output = agent.step(time_step)
+      pid = time_step[0].current_player()
+      time_step, reward, done, unreset_time_steps = envs.step(
+          agent_output, reset_if_done=True)
+
+      for ts in unreset_time_steps:
+          if ts.last():
+            real_reward = ts.rewards[0]
+            writer.add_scalar("charts/player_0_training_returns", real_reward,
+                            agent.total_steps_done)
+            recent_rewards.append(real_reward)
+
+      pid_reward = [r[pid] for r in reward]
+      agent.post_step(pid_reward, done)
+
+    if FLAGS.anneal_lr:
+      agent.anneal_learning_rate(update, num_updates)
+
+    agent.learn(time_step)
+
+    if update % FLAGS.eval_every == 0:
+      logging.info("-" * 80)
+      logging.info("Step %s", agent.total_steps_done)
+      mean_reward = eval_against_random_bots(env=eval_env, trained_agent=agent, random_agents=random_agents, num_episodes=FLAGS.eval_episodes)
+      logging.info("Mean rewards (p0/p1): %s", mean_reward)
+
+  agent.save(f"models/{run_name}_{FLAGS.game_name}.pt")
+  writer.close()
+  logging.info("All done. Have a pleasant day :)")
+
+
+if __name__ == "__main__":
+  app.run(main)
