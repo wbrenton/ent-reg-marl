@@ -1,5 +1,5 @@
 import sys 
-sys.path.append('/admin/home-willb/gtrl/')
+sys.path.append('/Users/will/Home/ML/Projects/soft-dqn/')
 
 # Copyright 2022 DeepMind Technologies Limited
 #
@@ -50,14 +50,14 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string("exp_name",
                     os.path.basename(__file__).rstrip(".py"),
                     "the name of this experiment")
-flags.DEFINE_string("game_name", "leduc_poker", "the id of the OpenSpiel game")
+flags.DEFINE_string("game_name", "phantom_ttt", "the id of the OpenSpiel game")
 flags.DEFINE_integer("eval_episodes", 1000, "number of evaluation episodes per evaluation")
 flags.DEFINE_float("learning_rate", 2.5e-4,
                    "the learning rate of the optimizer")
 flags.DEFINE_integer("seed", 1, "seed of the experiment")
 flags.DEFINE_integer("total_timesteps", 10_000_000,
                      "total timesteps of the experiments")
-flags.DEFINE_integer("eval_every", 10, "evaluate the policy every N updates")
+flags.DEFINE_integer("eval_every", 100, "evaluate the policy every N updates")
 flags.DEFINE_bool("torch_deterministic", True,
                   "if toggled, `torch.backends.cudnn.deterministic=False`")
 flags.DEFINE_bool("cuda", True, "if toggled, cuda will be enabled by default")
@@ -171,7 +171,7 @@ def main(_):
         for i in range(FLAGS.num_envs)
   ])
   agent_fn = PPOAgent
-  
+
 
   game = envs.envs[0]._game  # pylint: disable=protected-access
   info_state_shape = tuple(game.information_state_tensor_shape())
@@ -236,8 +236,10 @@ def main(_):
       logging.info("Step %s", agent.total_steps_done)
       mean_reward = eval_against_random_bots(env=eval_env, trained_agent=agent, random_agents=random_agents, num_episodes=FLAGS.eval_episodes)
       logging.info("Mean rewards (p0/p1): %s", mean_reward)
-
-  agent.save(f"models/{run_name}_{FLAGS.game_name}.pt")
+      writer.add_scalar("charts/mean_reward_p0", mean_reward[0], agent.total_steps_done)
+      writer.add_scalar("charts/mean_reward_p1", mean_reward[1], agent.total_steps_done)
+  
+  agent.save(f"models/{run_name}.pt")
   writer.close()
   logging.info("All done. Have a pleasant day :)")
 
