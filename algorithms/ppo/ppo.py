@@ -60,6 +60,45 @@ class PPOAgent(nn.Module):
   def __init__(self, num_actions, observation_shape, device):
     super().__init__()
     self.critic = nn.Sequential(
+        layer_init(nn.Linear(np.array(observation_shape).prod(), 64)),
+        nn.Tanh(),
+        layer_init(nn.Linear(64, 64)),
+        nn.Tanh(),
+        layer_init(nn.Linear(64, 1), std=1.0),
+    )
+    self.actor = nn.Sequential(
+        layer_init(nn.Linear(np.array(observation_shape).prod(), 64)),
+        nn.Tanh(),
+        layer_init(nn.Linear(64, 64)),
+        nn.Tanh(),
+        layer_init(nn.Linear(64, num_actions), std=0.01),
+    )
+    self.device = device
+    self.num_actions = num_actions
+    self.register_buffer("mask_value", torch.tensor(INVALID_ACTION_PENALTY))
+
+  def get_value(self, x):
+    return self.critic(x)
+
+  def get_action_and_value(self, x, legal_actions_mask=None, action=None):
+    if legal_actions_mask is None:
+      legal_actions_mask = torch.ones((len(x), self.num_actions)).bool()
+
+    logits = self.actor(x)
+    probs = CategoricalMasked(
+        logits=logits, masks=legal_actions_mask, mask_value=self.mask_value)
+    if action is None:
+      action = probs.sample()
+    return action, probs.log_prob(action), probs.entropy(), self.critic(
+        x), probs.probs
+
+
+class PPOAgentLarge(nn.Module):
+  """A PPO agent module."""
+
+  def __init__(self, num_actions, observation_shape, device):
+    super().__init__()
+    self.critic = nn.Sequential(
         layer_init(nn.Linear(np.array(observation_shape).prod(), 512)),
         nn.Tanh(),
         layer_init(nn.Linear(512, 512)),
@@ -168,6 +207,7 @@ class PPO(nn.Module):
   performance. The number of parallel environments is controlled by the
   num_envs argument.
   """
+
   def __init__(
       self,
       input_shape,
@@ -190,11 +230,11 @@ class PPO(nn.Module):
       target_kl=None,
       device="cpu",
       writer=None,  # Tensorboard SummaryWriter
-      agent_fn=PPOAtariAgent,
+      agent_fn=PPOAgent,
   ):
     super().__init__()
 
-    self.input_shape = input_shape
+    self.input_shape = (np.array(input_shape).prod(),)
     self.num_actions = num_actions
     self.num_players = num_players
     self.device = device
@@ -209,6 +249,7 @@ class PPO(nn.Module):
     self.learning_rate = learning_rate
 
     # Loss function
+    self.loss = None
     self.gae = gae
     self.gamma = gamma
     self.gae_lambda = gae_lambda
@@ -226,22 +267,21 @@ class PPO(nn.Module):
     # Initialize networks
     self.network = agent_fn(self.num_actions, self.input_shape,
                             device).to(device)
-    self.optimizer = optim.Adam(
-        self.parameters(), lr=self.learning_rate, eps=1e-5)
+    self.optimizer = optim.SGD(
+        self.parameters(), lr=self.learning_rate)
 
     # Initialize training buffers
     self.legal_actions_mask = torch.zeros(
         (self.steps_per_batch, self.num_envs, self.num_actions),
         dtype=torch.bool).to(device)
-    self.obs = torch.zeros((self.steps_per_batch, self.num_envs) +
-                           self.input_shape).to(device)
+    self.obs = torch.zeros((self.steps_per_batch, self.num_envs, *self.input_shape)).to(device)
     self.actions = torch.zeros((self.steps_per_batch, self.num_envs)).to(device)
     self.logprobs = torch.zeros(
         (self.steps_per_batch, self.num_envs)).to(device)
     self.rewards = torch.zeros((self.steps_per_batch, self.num_envs)).to(device)
     self.dones = torch.zeros((self.steps_per_batch, self.num_envs)).to(device)
     self.values = torch.zeros((self.steps_per_batch, self.num_envs)).to(device)
-    self.current_pid = torch.zeros((self.steps_per_batch, self.num_envs)).to(device)
+    self.current_players = torch.zeros((self.steps_per_batch, self.num_envs)).to(device)
 
     # Initialize counters
     self.cur_batch_idx = 0
@@ -272,7 +312,7 @@ class PPO(nn.Module):
         return [
             StepOutput(action=a.item(), probs=p)
             for (a, p) in zip(action, probs)
-        ]
+        ][0]
     else:
       with torch.no_grad():
         # act
@@ -284,23 +324,24 @@ class PPO(nn.Module):
         legal_actions_mask = legal_actions_to_mask([
             ts.observations["legal_actions"][ts.current_player()] for ts in time_step
         ], self.num_actions).to(self.device)
-        current_pid = torch.Tensor([ts.current_player() for ts in time_step]).to(self.device)
+        current_players = torch.Tensor([ts.current_player() for ts in time_step]).to(self.device)
+
         action, logprob, _, value, probs = self.get_action_and_value(
             obs, legal_actions_mask=legal_actions_mask)
 
         # store
-        self.current_pid[self.cur_batch_idx] = current_pid
         self.legal_actions_mask[self.cur_batch_idx] = legal_actions_mask
         self.obs[self.cur_batch_idx] = obs
         self.actions[self.cur_batch_idx] = action
         self.logprobs[self.cur_batch_idx] = logprob
         self.values[self.cur_batch_idx] = value.flatten()
+        self.current_players[self.cur_batch_idx] = current_players
 
         agent_output = [
             StepOutput(action=a.item(), probs=p)
             for (a, p) in zip(action, probs)
         ]
-        return agent_output
+        return agent_output[0]
 
   def post_step(self, reward, done):
     self.rewards[self.cur_batch_idx] = torch.tensor(reward).to(
@@ -352,7 +393,7 @@ class PPO(nn.Module):
     b_advantages = advantages.reshape(-1)
     b_returns = returns.reshape(-1)
     b_values = self.values.reshape(-1)
-    b_playersigns = -2. * self.current_pid.reshape(-1) + 1.
+    b_playersigns = -2. * self.current_players.reshape(-1) + 1.
     b_advantages *= b_playersigns
 
     # Optimizing the policy and value network
@@ -412,6 +453,7 @@ class PPO(nn.Module):
         loss.backward()
         nn.utils.clip_grad_norm_(self.parameters(), self.max_grad_norm)
         self.optimizer.step()
+        self.loss = loss
 
       if self.target_kl is not None:
         if approx_kl > self.target_kl:
@@ -449,14 +491,10 @@ class PPO(nn.Module):
     # Update counters
     self.updates_done += 1
     self.cur_batch_idx = 0
-    self.loss = loss.item()
 
   def save(self, path):
     """Saves the actor weights to path"""
     torch.save(self.network.actor.state_dict(), path)
-
-  def load(self, path):
-    self.network.actor.load_state_dict(torch.load(path))
 
   def anneal_learning_rate(self, update, num_total_updates):
     # Annealing the rate
