@@ -1,13 +1,14 @@
 import sys
+from rich.pretty import pprint
 import argparse
 from open_spiel.python import rl_environment
 
 if __name__ == "__main__":
-    sys.path.append("/Users/will/Home/ML/Projects/soft-dqn/")
+    sys.path.append("/admin/home-willb/soft-dqn/")
     from algorithms.nfsp import nfsp
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--game", default="dark_hex")
+    parser.add_argument("--game", default="phantom_ttt")
     parser.add_argument("--eval", default="random_opponent", choices=["exploitability", "random_opponent"])
     parser.add_argument("--exp_name", default="nfsp")
     parser.add_argument("--num_players", default=2)
@@ -17,6 +18,7 @@ if __name__ == "__main__":
     parser.add_argument("--hidden_layer_sizes", default=[512, 512, 512])
     parser.add_argument("--reservoir_buffer_capacity", default=2_000_000)
     args = parser.parse_args()
+    pprint(args)
 
     env = rl_environment.Environment(args.game)
     info_state_size = env.observation_spec()["info_state"][0]

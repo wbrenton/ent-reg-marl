@@ -79,7 +79,7 @@ def train_and_evaluate_against_random(args, env, agents):
                 losses = [agent.loss for agent in agents]
                 r_p0, r_p1 = eval_against_fixed_bots(eval_env, agents, fixed_agents)
                 returns.append([(env_steps + 1), r_p0, r_p1])
-                print(f"Step: {env_steps + 1}, Losses: {losses}, Returns: {r_p0}, {r_p1}")
+                print(f"Step: {env_steps + 1}, Losses: {losses}, Returns: {r_p0}, {r_p1}", flush=True)
             player_id = time_step.observations["current_player"]
             agent_output = agents[player_id].step(time_step)
             action_list = [agent_output.action]

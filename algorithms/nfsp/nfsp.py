@@ -317,7 +317,7 @@ class NFSP(rl_agent.AbstractAgent):
         return True
     return False
 
-  def restore(self, checkpoint_dir):
+  def load(self, checkpoint_dir):
     """Restores the average policy network and the inner RL agent's q-network.
 
     Note that this does not restore the experience replay buffers and should

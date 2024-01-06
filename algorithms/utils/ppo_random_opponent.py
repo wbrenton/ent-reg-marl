@@ -72,26 +72,27 @@ def train_and_evaluate_against_random(args, env, agent):
     fn = directory + f"_vs_random"
     returns = []
     env_steps = 0
-    num_updates = args.num_env_steps // args.num_steps
+    num_updates = args.num_env_steps // args.steps_per_batch
     time_step = env.reset()
     for update in range(num_updates):
-        for step in range(args.num_steps):
-            if (env_steps + 1) % args.eval_every == 0:
-                losses = agent.loss
-                r_p0, r_p1 = eval_against_fixed_bots(eval_env, [agent, agent], fixed_agents)
-                returns.append([(env_steps + 1), r_p0, r_p1])
-                print(f"Step: {env_steps + 1}, Losses: {losses}, Returns: {r_p0}, {r_p1}")
-            pid = time_step.current_player()
-            agent_output = agent.step(time_step)
-            action_list = [agent_output.action]
-            time_step = env.step(action_list)
-            agent.post_step(time_step.rewards[pid], 1 - time_step.discounts[pid])
-            env_steps += 1
-            if time_step.last():
-                time_step = env.reset()
-        agent.learn(time_step)
-    agent.save(fn)
-
+      for step in range(args.steps_per_batch):
+        if (env_steps + 1) % args.eval_every == 0:
+          r_p0, r_p1 = eval_against_fixed_bots(eval_env, [agent, agent], fixed_agents)
+          returns.append([(env_steps + 1), r_p0, r_p1])
+          agent.writer.add_scalar("charts/reward_pid0", r_p0, env_steps + 1)
+          agent.writer.add_scalar("charts/reward_pid1", r_p1, env_steps + 1)
+          agent.writer.add_scalar("charts/reward_mean", (r_p0 + r_p1) / 2, env_steps + 1)
+          print(f"Update: {update} Env Step: {env_steps + 1}, Losses: {agent.loss}, Returns: {r_p0}, {r_p1}", flush=True)
+        player_id = time_step.observations["current_player"]
+        agent_output = agent.step(time_step)
+        action_list = [agent_output.action]
+        time_step = env.step(action_list)
+        agent.post_step(time_step.rewards[player_id], time_step.last())
+        env_steps += 1
+        if time_step.last():
+          time_step = env.reset()
+      agent.learn(time_step)
+    agent.save(directory)
     returns = np.array(returns)
     df = pd.DataFrame(data={'pid_0': returns[:, 1], 'pid_1': returns[:, 2]}, index=returns[:, 0].astype(np.int32))
     df['mean'] = df.mean(axis=1)

@@ -60,45 +60,6 @@ class PPOAgent(nn.Module):
   def __init__(self, num_actions, observation_shape, device):
     super().__init__()
     self.critic = nn.Sequential(
-        layer_init(nn.Linear(np.array(observation_shape).prod(), 64)),
-        nn.Tanh(),
-        layer_init(nn.Linear(64, 64)),
-        nn.Tanh(),
-        layer_init(nn.Linear(64, 1), std=1.0),
-    )
-    self.actor = nn.Sequential(
-        layer_init(nn.Linear(np.array(observation_shape).prod(), 64)),
-        nn.Tanh(),
-        layer_init(nn.Linear(64, 64)),
-        nn.Tanh(),
-        layer_init(nn.Linear(64, num_actions), std=0.01),
-    )
-    self.device = device
-    self.num_actions = num_actions
-    self.register_buffer("mask_value", torch.tensor(INVALID_ACTION_PENALTY))
-
-  def get_value(self, x):
-    return self.critic(x)
-
-  def get_action_and_value(self, x, legal_actions_mask=None, action=None):
-    if legal_actions_mask is None:
-      legal_actions_mask = torch.ones((len(x), self.num_actions)).bool()
-
-    logits = self.actor(x)
-    probs = CategoricalMasked(
-        logits=logits, masks=legal_actions_mask, mask_value=self.mask_value)
-    if action is None:
-      action = probs.sample()
-    return action, probs.log_prob(action), probs.entropy(), self.critic(
-        x), probs.probs
-
-
-class PPOAgentLarge(nn.Module):
-  """A PPO agent module."""
-
-  def __init__(self, num_actions, observation_shape, device):
-    super().__init__()
-    self.critic = nn.Sequential(
         layer_init(nn.Linear(np.array(observation_shape).prod(), 512)),
         nn.Tanh(),
         layer_init(nn.Linear(512, 512)),
@@ -249,7 +210,6 @@ class PPO(nn.Module):
     self.learning_rate = learning_rate
 
     # Loss function
-    self.loss = None
     self.gae = gae
     self.gamma = gamma
     self.gae_lambda = gae_lambda
@@ -262,13 +222,14 @@ class PPO(nn.Module):
     self.target_kl = target_kl
 
     # Logging
+    self.loss = None
     self.writer = writer
 
     # Initialize networks
     self.network = agent_fn(self.num_actions, self.input_shape,
                             device).to(device)
-    self.optimizer = optim.SGD(
-        self.parameters(), lr=self.learning_rate)
+    self.optimizer = optim.Adam(
+        self.parameters(), lr=self.learning_rate, eps=1e-5)
 
     # Initialize training buffers
     self.legal_actions_mask = torch.zeros(
@@ -296,7 +257,7 @@ class PPO(nn.Module):
     return self.network.get_action_and_value(x, legal_actions_mask, action)
 
   def step(self, time_step, is_evaluation=False):
-    time_step = [time_step]
+    time_step = [time_step] if type(time_step) is not list else time_step
     if is_evaluation:
       with torch.no_grad():
         legal_actions_mask = legal_actions_to_mask([
@@ -352,7 +313,7 @@ class PPO(nn.Module):
     self.cur_batch_idx += 1
 
   def learn(self, time_step):
-    time_step = [time_step]
+    time_step = [time_step] if type(time_step) is not list else time_step
     next_obs = torch.Tensor(
         np.array([
             np.reshape(ts.observations["info_state"][ts.current_player()],
@@ -453,7 +414,6 @@ class PPO(nn.Module):
         loss.backward()
         nn.utils.clip_grad_norm_(self.parameters(), self.max_grad_norm)
         self.optimizer.step()
-        self.loss = loss
 
       if self.target_kl is not None:
         if approx_kl > self.target_kl:
@@ -463,6 +423,8 @@ class PPO(nn.Module):
     var_y = np.var(y_true)
     explained_var = np.nan if var_y == 0 else 1 - np.var(y_true -
                                                          y_pred) / var_y
+
+    self.loss = loss.item()
 
     # TRY NOT TO MODIFY: record rewards for plotting purposes
     if self.writer is not None:
@@ -494,7 +456,11 @@ class PPO(nn.Module):
 
   def save(self, path):
     """Saves the actor weights to path"""
-    torch.save(self.network.actor.state_dict(), path)
+    torch.save(self.network.actor.state_dict(), path + "actor.pt")
+    
+  def load(self, path):
+    """Loads the actor weights from path"""
+    self.network.actor.load_state_dict(torch.load(path + "actor.pt", map_location=torch.device(self.device)))
 
   def anneal_learning_rate(self, update, num_total_updates):
     # Annealing the rate
