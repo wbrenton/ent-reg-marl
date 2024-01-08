@@ -222,6 +222,7 @@ class PPO(nn.Module):
     self.target_kl = target_kl
 
     # Logging
+    self.loss = None
     self.writer = writer
 
     # Initialize networks
@@ -256,7 +257,7 @@ class PPO(nn.Module):
     return self.network.get_action_and_value(x, legal_actions_mask, action)
 
   def step(self, time_step, is_evaluation=False):
-    time_step = [time_step] if not isinstance(time_step, list) else time_step
+    time_step = [time_step] if type(time_step) is not list else time_step
     if is_evaluation:
       with torch.no_grad():
         legal_actions_mask = legal_actions_to_mask([
@@ -312,7 +313,7 @@ class PPO(nn.Module):
     self.cur_batch_idx += 1
 
   def learn(self, time_step):
-    time_step = [time_step] if not isinstance(time_step, list) else time_step
+    time_step = [time_step] if type(time_step) is not list else time_step
     next_obs = torch.Tensor(
         np.array([
             np.reshape(ts.observations["info_state"][ts.current_player()],
@@ -354,7 +355,7 @@ class PPO(nn.Module):
     b_returns = returns.reshape(-1)
     b_values = self.values.reshape(-1)
     b_playersigns = -2. * self.current_players.reshape(-1) + 1.
-    b_advantages *= b_playersigns * -1.
+    b_advantages *= b_playersigns
 
     # Optimizing the policy and value network
     b_inds = np.arange(self.batch_size)
@@ -423,6 +424,8 @@ class PPO(nn.Module):
     explained_var = np.nan if var_y == 0 else 1 - np.var(y_true -
                                                          y_pred) / var_y
 
+    self.loss = loss.item()
+
     # TRY NOT TO MODIFY: record rewards for plotting purposes
     if self.writer is not None:
       self.writer.add_scalar("charts/learning_rate",
@@ -454,10 +457,10 @@ class PPO(nn.Module):
   def save(self, path):
     """Saves the actor weights to path"""
     torch.save(self.network.actor.state_dict(), path + "actor.pt")
-
+    
   def load(self, path):
     """Loads the actor weights from path"""
-    self.network.actor.load_state_dict(torch.load(path + "actor.pt", map_location=torch.device('cpu')))
+    self.network.actor.load_state_dict(torch.load(path + "actor.pt", map_location=torch.device(self.device)))
 
   def anneal_learning_rate(self, update, num_total_updates):
     # Annealing the rate

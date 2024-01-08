@@ -59,9 +59,9 @@ flags.DEFINE_integer("batch_size", 32,
 flags.DEFINE_integer("seed", 0, "Seed to use for everything")
 flags.DEFINE_integer("window_size", 30, "Size of window for rolling average")
 flags.DEFINE_integer("num_players", 2, "Numebr of players")
-flags.DEFINE_string("game", "phantom_ttt", "Game string")
+flags.DEFINE_string("game", "dark_hex", "Game string")
 flags.DEFINE_string("exploitee", "ppo", "Exploitee (random | first | ...)")
-flags.DEFINE_string("exploitee_path", "results/ppo_lr_0.00025_alpha_0.05/phantom_ttt/", "relative path (from root dir) to exploitee model")
+flags.DEFINE_string("exploitee_path", "results/ppo_lr_0.00025_norm_adv_True_gamma_1.0_ent_coef_0.05/", "relative path (from root dir) to exploitee model")
 flags.DEFINE_string("learner", "dqn", "Learner (qlearning | dqn)")
 
 
@@ -177,6 +177,7 @@ def main(_):
     fn = directory + f"dqn_best_responder_vs_{FLAGS.exploitee}"
   np.random.seed(FLAGS.seed)
   num_players = FLAGS.num_players
+  print("exploitee_path", FLAGS.exploitee_path, flush=True)
 
   env = rl_environment.Environment(FLAGS.game, include_full_state=True)
   info_state_size = env.observation_spec()["info_state"][0]
